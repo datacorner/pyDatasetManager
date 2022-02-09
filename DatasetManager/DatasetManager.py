@@ -3,9 +3,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import RandomOverSampler
 from pandas_profiling import ProfileReport
+from pandas.api.types import infer_dtype
+from datetime import datetime
 
 CATEGORICAL_PERCENT_THRESOLD = 5
-COLUMNS_INFOS=["Name", "NaN", "Null", "Type", "Unique Values", "Unique Values (%)", "ML Type", "Count"]
+COLUMNS_INFOS=["Name", "NaN", "Null", "Type", "Inferred Type", "Unique Values", "Unique Values (%)", "ML Type", "Count"]
 COL_MLTYPE_IGNORE = "Ignore"
 COL_MLTYPE_NUMERIC = "Numeric"
 COL_MLTYPE_CATEGORICAL = "Categorical"
@@ -13,100 +15,125 @@ COL_MLTYPE_Y = "Y"
 COL_MLTYPE_TEXT = "Text"
 
 # *********************************************************
-# Method/Function which refresh the columns infos Dataframe
-# thresold: numeric (in %) set the thresold between Categorical vs text ratio
-# dataset: dataset to investigate/profile
-# returns a DataFrame with all the columns informations
+def get_col_dtype(col):
+  """
+  Infer datatype of a pandas column, process only if the column dtype is object. 
+  input:   col: a pandas Series representing a df column. 
+  """
+  if col.dtype == "object":
+      try: # try datetime
+          col_new = pd.to_datetime(col.dropna().unique())
+          return "date" #col_new.dtype
+      except:
+          try: # try numeric
+              col_new = pd.to_numeric(col.dropna().unique())
+              return col_new.dtype
+          except:
+              try: # try time
+                  col_new = pd.to_timedelta(col.dropna().unique())
+                  return "time" #col_new.dtype
+              except:
+                  return infer_dtype(col)
+  else:
+      return infer_dtype(col)
+
 # *********************************************************
 def refresh_columns_infos(self, thresold, dataset):
-    columninfos = pd.DataFrame(columns=COLUMNS_INFOS)
-    # Fill the ML column types (Numerical, Categorical or Text)
-    categorical_thresold = dataset.shape[0] * thresold / 100
-    for col in dataset.columns:
-      # Calculate the Nb of value occurence in the columns
-      nbOccurrence = len(dataset[col].value_counts())
-      # Count the number of nulls
-      nbnulls = dataset[col].isnull().sum()
-      # Count the NaN
-      nbnan = dataset[col].isna().sum()
-      # set the ML type
-      if (dataset[col].dtypes == "O"):
-        if (nbOccurrence >= categorical_thresold):
-            mlcolumntype = COL_MLTYPE_TEXT # Text variable if Nb occurence > Thresold (%)
-        else:
-            mlcolumntype = COL_MLTYPE_CATEGORICAL
+  """
+  Method/Function which refresh the columns infos Dataframe
+    thresold: numeric (in %) set the thresold between Categorical vs text ratio
+    dataset: dataset to investigate/profile
+    returns a DataFrame with all the columns informations
+  """
+  columninfos = pd.DataFrame(columns=COLUMNS_INFOS)
+  # Fill the ML column types (Numerical, Categorical or Text)
+  categorical_thresold = dataset.shape[0] * thresold / 100
+  for col in dataset.columns:
+    # Calculate the Nb of value occurence in the columns
+    nbOccurrence = len(dataset[col].value_counts())
+    # Count the number of nulls
+    nbnulls = dataset[col].isnull().sum()
+    # Count the NaN
+    nbnan = dataset[col].isna().sum()
+    # set the ML type
+    if (dataset[col].dtypes == "O"):
+      if (nbOccurrence >= categorical_thresold):
+          mlcolumntype = COL_MLTYPE_TEXT # Text variable if Nb occurence > Thresold (%)
       else:
-        mlcolumntype = COL_MLTYPE_NUMERIC
+          mlcolumntype = COL_MLTYPE_CATEGORICAL
+    else:
+      mlcolumntype = COL_MLTYPE_NUMERIC
 
-      # Create a new Column info
-      columninfos = columninfos.append({"Name":col, 
-                                        "NaN":nbnan, 
-                                        "Null":nbnulls, 
-                                        "Type":dataset[col].dtypes, 
-                                        "Unique Values":nbOccurrence,
-                                        "Unique Values (%)":'{:.2f}'.format(nbOccurrence / dataset.shape[0] * 100),
-                                        "ML Type": mlcolumntype,
-                                        "Count": dataset.shape[0]}, 
-                                        ignore_index=True)
-    columninfos = columninfos.set_index(["Name"])
-    ds_describe = dataset.describe(include='all').transpose()
-    columninfos = columninfos.join(ds_describe)
-    try:
-      columninfos = columninfos.drop(['count', 'unique'], axis=1)
-    except:
-      pass
-    return columninfos
+    # Create a new Column info
+    columninfos["Column"] = columninfos["Name"]
+    columninfos = columninfos.append({"Name":col, 
+                                      "NaN":nbnan, 
+                                      "Null":nbnulls, 
+                                      "Type":dataset[col].dtypes, 
+                                      "Inferred Type": get_col_dtype(dataset[col]),
+                                      "Unique Values":nbOccurrence,
+                                      "Unique Values (%)":'{:.2f}'.format(nbOccurrence / dataset.shape[0] * 100),
+                                      "ML Type": mlcolumntype,
+                                      "Count": dataset.shape[0]}, 
+                                      ignore_index=True)
+  columninfos = columninfos.set_index(["Name"])
+  ds_describe = dataset.describe(include='all').transpose()
+  columninfos = columninfos.join(ds_describe)
+  try:
+    columninfos = columninfos.drop(['count', 'unique'], axis=1)
+  except:
+    pass
+    
+  return columninfos
 
-# *********************************************************
-# Prepare the data before modelisation
-# scaler: sklearn scaler engine (must have been initialized before), if None no scaling
 # *********************************************************
 def prep_dataset(self, scaler=None):
-    dataset_prep = self.dataset.copy()
+  """
+  Prepare the data before modelisation
+    scaler: sklearn scaler engine (must have been initialized before), if None no scaling
+  """
+  dataset_prep = self.dataset.copy()
 
-    # Drop ignore & Text columns
-    ds_ignore = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_IGNORE]
-    ds_text = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_TEXT]
-    ds_col_to_remove = pd.concat([ds_ignore, ds_text])
-    dataset_prep.drop(ds_col_to_remove.index.to_numpy(), axis=1, inplace=True)
+  # Drop ignore & Text columns
+  ds_ignore = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_IGNORE]
+  ds_text = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_TEXT]
+  ds_col_to_remove = pd.concat([ds_ignore, ds_text])
+  dataset_prep.drop(ds_col_to_remove.index.to_numpy(), axis=1, inplace=True)
 
-    # Manage Categorical / One-Hot
-    ds_categorical = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_CATEGORICAL]
-    categorical_cols = ds_categorical.index.to_numpy()
-    onehot = pd.get_dummies(dataset_prep[categorical_cols], prefix=categorical_cols)
+  # Manage Categorical / One-Hot
+  ds_categorical = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_CATEGORICAL]
+  categorical_cols = ds_categorical.index.to_numpy()
+  onehot = pd.get_dummies(dataset_prep[categorical_cols], prefix=categorical_cols)
+  dataset_prep = pd.concat([onehot, dataset_prep], axis=1)
+  dataset_prep.drop(categorical_cols, axis=1, inplace=True)
 
-    # Update data with new columns
-    dataset_prep = pd.concat([onehot, dataset_prep], axis=1)
-    dataset_prep.drop(categorical_cols, axis=1, inplace=True)
+  # Manage NaN
+  ds_numeric = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_NUMERIC]
+  for col in ds_numeric.index.to_numpy():
+    dataset_prep[col] = dataset_prep[col].fillna(0)
 
-    # Manage NaN
-    ds_numeric = self.columninfos[self.columninfos['ML Type'] == COL_MLTYPE_NUMERIC]
-    for col in ds_numeric.index.to_numpy():
-      dataset_prep[col] = dataset_prep[col].fillna(0)
+  # scale dataset if requested
+  if (scaler != None):
+    names = dataset_prep.columns
+    scaled_data = scaler.fit_transform(dataset_prep)
+    dataset_prep = pd.DataFrame(scaled_data, columns=names)
 
-    # scale dataset if requested
-    if (scaler != None):
-      names = dataset_prep.columns
-      scaled_data = scaler.fit_transform(dataset_prep)
-      dataset_prep = pd.DataFrame(scaled_data, columns=names)
+  return dataset_prep
 
-    return dataset_prep
-
-# *********************************************************
-# split dataset in a dataset with label + feature in it
-# dataset: dataset to split
-# test_size: proportion of the dataset to include in the train split
-# label_column_name: Column label name
-# returns: X_train, X_test, y_train, y_test
 # *********************************************************
 def get_data_split(self, dataset, label_column_name, test_size=0.20):
+    """
+    split dataset in a dataset with label + feature in it
+      dataset: dataset to split
+      test_size: proportion of the dataset to include in the train split
+      label_column_name: Column label name
+      returns: X_train, X_test, y_train, y_test
+    """
     y = dataset[label_column_name]
     X = dataset.copy()
     X.drop(label_column_name, axis=1, inplace=True)
     return train_test_split(X, y, test_size=test_size)
 
-# *********************************************************
-# Class DatasetManager
 # *********************************************************
 class DatasetManager():
     def __init__(self):
@@ -123,11 +150,9 @@ class DatasetManager():
       return self.dataset
 
     # Private method which refresh the columns infos Dataframe
-    # thresold: numeric (in %) set the thresold between Categorical vs text ratio
-    # dataset: dataset to investigate/profile
-    # returns a DataFrame with all the columns informations
     __refresh_columns_infos = refresh_columns_infos
 
+    # data preparation function
     prep = prep_dataset
 
     # Display the Pandas Profiling Report
@@ -140,8 +165,6 @@ class DatasetManager():
       profile.to_notebook_iframe()
 
     # Set/Force ML Column Types
-    # columnnames: array of columns names
-    # status: new status
     def __set_colmltype(self, columnnames, status):
       for colname in columnnames:
         self.columninfos.loc[colname]["ML Type"] = status
@@ -168,7 +191,31 @@ class DatasetManager():
     # Load the data file and initialize/populate internal variables/infos
     def load_dataframe(self, dataset, cat_text_thresold=CATEGORICAL_PERCENT_THRESOLD):
         self.dataset = dataset
-        self.columninfos = self.__refresh_columns_infos(cat_text_thresold, dataset)
+        self.reset(cat_text_thresold)
+
+    # Reset the infos dataframe from the current dataset data
+    def reset(self, cat_text_thresold=CATEGORICAL_PERCENT_THRESOLD):
+        if not(self.dataset is None):
+          self.columninfos = self.__refresh_columns_infos(cat_text_thresold, self.dataset)
+
+    def change_column_name(self, oldname, newname):
+      for i in range(len(self.columninfos)):
+        if (self.columninfos["Column"][i] == oldname):
+          self.columninfos["Column"][i] = newname
+
+    def manage_date_column(self, col, 
+                           date_format="%Y/%m/%d", 
+                           default_date="01/01/1901 00:00:00", default_date_format='%d/%m/%Y %H:%M:%S',
+                           dropcolumn=True):
+      self.dataset[col] = pd.to_datetime(self.dataset[col], errors='coerce', format=date_format)
+      def_default_date = lambda mydate: datetime.strptime(default_date, default_date_format) if pd.isnull(mydate) else mydate
+      self.dataset[col] = self.dataset[col].apply(def_default_date)
+      self.dataset[col + "_weekday"] = self.dataset[col].dt.day_name()
+      self.dataset[col + "_day"] = self.dataset[col].dt.day
+      self.dataset[col + "_month"] = self.dataset[col].dt.month
+      self.dataset[col + "_year"] = self.dataset[col].dt.year
+      if (dropcolumn):
+        self.dataset = self.dataset.drop([col], axis=1)
 
     # split dataset in a dataset with label + feature in it
     get_data_split = get_data_split
