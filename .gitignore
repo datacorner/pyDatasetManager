@@ -1,0 +1,3 @@
+
+*.pyc
+DatasetManager/__pycache__/*.pyc
